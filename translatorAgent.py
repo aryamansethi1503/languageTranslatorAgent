@@ -1,5 +1,6 @@
 import streamlit as st
 import google.generativeai as genai
+from google.cloud import aiplatform
 from dotenv import load_dotenv
 import os
 from PyPDF2 import PdfReader
@@ -19,44 +20,135 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-    [data-testid="stExpanderDetails"] {
-        padding: 0rem;
-      }
+    [data-testid="stExpanderDetails"] { padding: 0rem; }
 </style>
 """, unsafe_allow_html=True)
 
 CHUNK_SIZE = 2
-
 DEFAULT_PROMPT_INSTRUCTIONS = """You are a highly skilled translation expert. Your task is to translate the provided English text into the specified target language.
 - Your output must ONLY be the translated text itself.
 - Do not include any introductory phrases like "Here is the translation:" or any other conversational filler.
 - Preserve the original formatting (like paragraphs and line breaks) as much as possible."""
 
+def init_session_state():
+    state_defaults = {
+        "gemini_api_configured": False,
+        "custom_model_configured": False,
+        "text_translation_result": "",
+        "doc_translation_result": "",
+        "target_language": "Hindi",
+        "doc_info": {"name": None, "type": None},
+        "selected_model": "models/gemini-1.5-flash"
+    }
+    for key, value in state_defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+init_session_state()
+
+try:
+    gemini_api_key = st.secrets.get("GEMINI_API_KEY", os.getenv("GEMINI_API_KEY"))
+    if gemini_api_key:
+        genai.configure(api_key=gemini_api_key)
+        st.session_state.gemini_api_configured = True
+except Exception as e:
+    st.warning(f"Could not configure Gemini API: {e}")
+if "custom_model" in st.secrets:
+    try:
+        aiplatform.init(
+            project=st.secrets["custom_model"]["project_id"],
+            location=st.secrets["custom_model"]["location"],
+        )
+        st.session_state.custom_model_configured = True
+    except Exception as e:
+        st.warning(f"Custom model credentials found, but failed to initialize Vertex AI SDK: {e}")
+
+if not st.session_state.gemini_api_configured and "custom_model" not in st.secrets:
+    st.error("FATAL: No models are configured. Please add credentials for Gemini or your custom model in secrets.toml.")
+    st.stop()
+
 @st.cache_resource
-def load_model(model_name):
+def load_gemini_model(model_name):
     """Loads the specified Gemini model and caches it."""
     return genai.GenerativeModel(model_name=model_name)
 
 @st.cache_data
-def translate_text(_model, text, target_language, instructions):
-    """Translates text and caches the result."""
-    if not text or not target_language:
-        return ""
+def translate_with_custom_model(_text, target_language, instructions):
+    """Translates text using the custom Vertex AI model."""
+    if not st.session_state.custom_model_configured:
+        st.error("Custom model selected, but its configuration in secrets.toml is missing or invalid.")
+        return None
     try:
+        endpoint_id = st.secrets["custom_model"]["endpoint_id"]
+        project_id = st.secrets["custom_model"]["project_id"]
+        location = st.secrets["custom_model"]["location"]
+        
+        gemma_endpoint = aiplatform.Endpoint(
+            endpoint_name=f"projects/{project_id}/locations/{location}/endpoints/{endpoint_id}"
+        )
+        
         final_prompt = f"""
         {instructions}
 
         Translate the following English text to **{target_language}**:
         ```
-        {text}
+        {_text}
         ```
         """
-        response = _model.generate_content(final_prompt)
-        print("API Call Made")
-        return response.text.strip()
+        instances = [{"prompt": final_prompt}]
+        response = gemma_endpoint.predict(instances=instances)
+        
+        if response.predictions and len(response.predictions) > 0:
+            first_prediction = response.predictions[0]
+            if 'translation_output' in first_prediction:
+                translated_text = first_prediction['translation_output']
+            elif 'translation_output' in first_prediction:
+                 translated_text = first_prediction['translation_output']
+            else:
+                st.error("Response format from custom model not recognized. Could not find 'translation_output' or 'content' key.")
+                st.json(response.predictions)
+                return None
+            print("Vertex AI API Call Made")
+            return translated_text.strip()
+        else:
+            st.error("The custom model responded, but the prediction format was not recognized.")
+            st.json(response)
+            return None
+            
     except Exception as e:
-        st.error(f"An error occurred during translation: {str(e)}")
+        st.error(f"A critical error occurred while contacting the Vertex AI endpoint: {e}")
         return None
+
+@st.cache_data
+def translate_text(model_name, text, target_language, instructions):
+    """
+    Checks the model name and calls the appropriate translation service.
+    """
+    if not text or not target_language:
+        return ""
+
+    if "custom/" in model_name:
+        return translate_with_custom_model(text, target_language, instructions)
+    else:
+        if not st.session_state.gemini_api_configured:
+            st.error("Gemini model selected, but the API key is missing or invalid.")
+            return None
+        try:
+            model = load_gemini_model(model_name)
+            final_prompt = f"""
+            {instructions}
+
+            Translate the following English text to **{target_language}**:
+            ```
+            {text}
+            ```
+            """
+            response = model.generate_content(final_prompt)
+            print("Gemini API Call Made")
+            return response.text.strip()
+        except Exception as e:
+            st.error(f"An error occurred during Gemini translation: {str(e)}")
+            return None
 
 def extract_text_from_pdf(file):
     try:
@@ -90,7 +182,6 @@ def create_pdf_from_text(text):
         pdf.add_font("DejaVu", "", "DejaVuSans.ttf", uni=True)
         pdf.set_font("DejaVu", size=12)
     except RuntimeError:
-        st.warning("DejaVu font not found. Falling back to default font.")
         pdf.set_font("Arial", size=12)
     pdf.multi_cell(0, 10, text)
     return bytes(pdf.output(dest='S'))
@@ -103,43 +194,13 @@ def create_docx_from_text(text):
     doc.save(bio)
     return bio.getvalue()
 
-def init_session_state():
-    """Initializes session state variables if they don't exist."""
-    state_defaults = {
-        "api_key_configured": False,
-        "text_translation_result": "",
-        "doc_translation_result": "",
-        "target_language": "Hindi",
-        "doc_info": {"name": None, "type": None},
-        "selected_model": "models/gemini-1.5-flash"
-    }
-    for key, value in state_defaults.items():
-        if key not in st.session_state:
-            st.session_state[key] = value
-
-init_session_state()
-
-api_key = st.secrets.get("GEMINI_API_KEY", os.getenv("GEMINI_API_KEY"))
-if not api_key:
-    st.error("Gemini API Key is not set. Please add it to secrets or a .env file.")
-    st.stop()
-
-try:
-    genai.configure(api_key=api_key)
-    st.session_state.api_key_configured = True
-except Exception as e:
-    st.error(f"Invalid API Key or configuration error: {e}")
-    st.session_state.api_key_configured = False
-    st.stop()
-
 st.title("🗣️ Language Translation Agent")
-st.markdown("**Translate Text or Documents using the power of Gemini.**")
+st.markdown("**Translate Text or Documents using your chosen AI model.**")
 
 st.markdown("Language and Model Selection")
 col_lang, col_model, col_empty = st.columns([1, 1, 2])
 
-languages = ["Abkhaz", "Acehnese", "Acholi", "Afar", "Afrikaans", "Albanian", "Alur", "Amharic", "Arabic", "Armenian", "Assamese", "Avar", "Awadhi", "Aymara","Azerbaijani", "Balinese", "Baluchi","Bambara", "Baoulé", "Bashkir","Basque","Batak Karo","Batak Simalungun","Batak Toba","Belarusian","Bemba","Bengali","Betawi","Bhojpuri","Bikol","Bosnian","Breton","Bulgarian","Buryat", "Cantonese","Catalan","Cebuano","Chamorro","Chechen","Chichewa","Chinese (Simplified)","Chinese (Traditional)","Chuukese","Chuvash","Corsican","Crimean Tatar (Cyrillic)","Crimean Tatar (Latin)","Croatian","Czech","Danish","Dari","Dhivehi","Dinka","Dogri","Dombe","Dutch","Dyula","Dzongkha","English","Esperanto","Estonian","Ewe","Faroese","Fijian","Filipino","Finnish","Fon","French","French (Canada)","Frisian","Friulian","Fulani", "Ga","Galician","Georgian","German","Greek","Guarani","Gujrati","Haitian Crele","Hakha Chin","Hausa","Hawaiian","Hebrew","Hiligaynon","Hindi","Hmong","Hungarian","Hunsrik","Iban","Icelandic","Igbo","Ilocano","Indonesian","Inuktut (Latin)","Inuktut (Syllabics)","Irish","Italian","Jamaican Patois","Japanese","Javanese","Jingpo","Kalaallisut","Kannada","Kanuri","Kapampangan","Kazakh","Khasi","Khmer","Kiga","Kikongo","Kinyarwanda","Kituba","Kokborok","Komi","Konkani","Korean","Krio","Kurdish (Kurmanji)","Kurdish (Sorani)","Kyrgyz",
-"Lao","Latgalian","Latin","Latvian","Ligurian","Limburgish","Lingala","Lithuanian","Lombard","Luganda","Luo","Luxembourgish", "Macedonian","Madurese","Maithili","Makassar","Malagasy","Malay","Malay (Jawi)","Malayalam","Maltese","Mam","Manx","Maroi","Marathi","Marshallese","Marwadi","Mauitian Creole","Meadow Mari","Meiteilon (Manipuri)","Minang","Mizo","Mongolian","Myanmar (Burmese)","Nahuatl (Eastern Huasteca)","Ndau","Ndebele (South)","Nepalbhasa (Newari)","Nepali","NKo","Norwegian","Nuer","Occitan","Odia (Oriya)","Oromo","Ossetian","Pangasinan","Papiamento","Pashto","Persian","Polish","Portuguese (Brazil)","Portuguese (Portugal)","Punjabi (Gurmukhi)","Punjabi (Shahmukhi)","Quechua","Qʼeqchiʼ","Romani","Romanian","Rundi","Russian","Sami (North)","Samoan","Sango","Sanskrit","Santali (Latin)","Santali (Ol Chiki)","Scots Gaelic","Sepedi","Serbian","Sesotho","Seychellois Creole","Shan","Shona","Sicilian","Silesian","Sindhi","Sinhala","Slovak","Slovenian","Somali","Spanish","Sundanese", "Susu","Swahili","Swati","Swedish","Tahitian","Tazik","Tamazight","Tamazight (Tifinagh)","Tamil","Tatr","Telugu","Tetum","Thai","Tibetan","Tigrinya","Tiv","Tok Pisin","Tongan","Tshiluba","Tsonga","Tswana","Tulu","Tumbuka","Turkish","Turkmen","Tuvan","Twi","Udmurt","Ukrainian","Urdu","Uyghur","Uzbek","Venda","Venetian","Vietnamese","Waray","Welsh","Wolof","Xhosa","Yakut","Yiddish","Yoruba","Yucatec Maya","Zapotec","Zulu"]
+languages = ["Abkhaz", "Acehnese", "Acholi", "Afar", "Afrikaans", "Albanian", "Alur", "Amharic", "Arabic", "Armenian", "Assamese", "Avar", "Awadhi", "Aymara","Azerbaijani", "Balinese", "Baluchi","Bambara", "Baoulé", "Bashkir","Basque","Batak Karo","Batak Simalungun","Batak Toba","Belarusian","Bemba","Bengali","Betawi","Bhojpuri","Bikol","Bosnian","Breton","Bulgarian","Buryat", "Cantonese","Catalan","Cebuano","Chamorro","Chechen","Chichewa","Chinese (Simplified)","Chinese (Traditional)","Chuukese","Chuvash","Corsican","Crimean Tatar (Cyrillic)","Crimean Tatar (Latin)","Croatian","Czech","Danish","Dari","Dhivehi","Dinka","Dogri","Dombe","Dutch","Dyula","Dzongkha","English","Esperanto","Estonian","Ewe","Faroese","Fijian","Filipino","Finnish","Fon","French","French (Canada)","Frisian","Friulian","Fulani", "Ga","Galician","Georgian","German","Greek","Guarani","Gujrati","Haitian Crele","Hakha Chin","Hausa","Hawaiian","Hebrew","Hiligaynon","Hindi","Hmong","Hungarian","Hunsrik","Iban","Icelandic","Igbo","Ilocano","Indonesian","Inuktut (Latin)","Inuktut (Syllabics)","Irish","Italian","Jamaican Patois","Japanese","Javanese","Jingpo","Kalaallisut","Kannada","Kanuri","Kapampangan","Kazakh","Khasi","Khmer","Kiga","Kikongo","Kinyarwanda","Kituba","Kokborok","Komi","Konkani","Korean","Krio","Kurdish (Kurmanji)","Kurdish (Sorani)","Kyrgyz", "Lao","Latgalian","Latin","Latvian","Ligurian","Limburgish","Lingala","Lithuanian","Lombard","Luganda","Luo","Luxembourgish", "Macedonian","Madurese","Maithili","Makassar","Malagasy","Malay","Malay (Jawi)","Malayalam","Maltese","Mam","Manx","Maroi","Marathi","Marshallese","Marwadi","Mauitian Creole","Meadow Mari","Meiteilon (Manipuri)","Minang","Mizo","Mongolian","Myanmar (Burmese)","Nahuatl (Eastern Huasteca)","Ndau","Ndebele (South)","Nepalbhasa (Newari)","Nepali","NKo","Norwegian","Nuer","Occitan","Odia (Oriya)","Oromo","Ossetian","Pangasinan","Papiamento","Pashto","Persian","Polish","Portuguese (Brazil)","Portuguese (Portugal)","Punjabi (Gurmukhi)","Punjabi (Shahmukhi)","Quechua","QÊ¼eqchiÊ¼","Romani","Romanian","Rundi","Russian","Sami (North)","Samoan","Sango","Sanskrit","Santali (Latin)","Santali (Ol Chiki)","Scots Gaelic","Sepedi","Serbian","Sesotho","Seychellois Creole","Shan","Shona","Sicilian","Silesian","Sindhi","Sinhala","Slovak","Slovenian","Somali","Spanish","Sundanese", "Susu","Swahili","Swati","Swedish","Tahitian","Tazik","Tamazight","Tamazight (Tifinagh)","Tamil","Tatr","Telugu","Tetum","Thai","Tibetan","Tigrinya","Tiv","Tok Pisin","Tongan","Tshiluba","Tsonga","Tswana","Tulu","Tumbuka","Turkish","Turkmen","Tuvan","Twi","Udmurt","Ukrainian","Urdu","Uyghur","Uzbek","Venda","Venetian","Vietnamese","Waray","Welsh","Wolof","Xhosa","Yakut","Yiddish","Yoruba","Yucatec Maya","Zapotec","Zulu"]
 languages.sort()
 
 try:
@@ -151,17 +212,35 @@ except ValueError:
 
 with col_lang:
     st.session_state.target_language = st.selectbox(
-        "Select Target Language",
-        languages,
-        index=default_lang_index,
-        label_visibility="collapsed"
+        "Select Target Language", languages, index=default_lang_index, label_visibility="collapsed"
     )
 
-valid_model_names = ["models/gemini-1.5-pro", "models/gemini-1.5-flash-8b","gemini-1.5-flash", "models/gemini-2.0-flash-live-001", "models/gemini-2.0-flash-lite", 
-"models/gemini-2.0-flash-preview-image-generation", "models/gemini-2.0-flash", "models/gemini-2.5-pro-preview-tts", "models/gemini-2.5-flash-preview-tts", "models/gemini-2.5-flash-image-preview", 
-"models/" "models/gemini-live-2.5-flash-preview", "models/gemini-2.5-flash-lite", "models/gemini-2.5-flash", "models/gemini-2.5-pro"]
+valid_model_names = [
+    "gemma-3-4b-it"
+]
+if st.session_state.gemini_api_configured:
+    valid_model_names.extend([
+        "models/gemini-1.5-pro",
+        "models/gemini-1.5-flash-8b",
+        "models/gemini-1.5-flash",
+        "models/gemini-2.0-flash-live-001",
+        "models/gemini-2.0-flash-lite",
+        "models/gemini-2.0-flash-preview-image-generation",
+        "models/gemini-2.0-flash",
+        "models/gemini-2.5-pro-preview-tts",
+        "models/gemini-2.5-flash-preview-tts",
+        "models/gemini-2.5-flash-image-preview",
+        "models/gemini-2.5-flash-preview-native-audio-dialog & gemini-2.5-flash-exp-native-audio-thinking-dialog",
+        "models/gemini-live-2.5-flash-preview",
+        "models/gemini-2.5-flash-lite",
+        "models/gemini-2.5-flash",
+        "models/gemini-2.5-pro"
+    ])
 
 with col_model:
+    if not valid_model_names:
+        st.error("No models available.")
+        st.stop()
     try:
         default_model_index = valid_model_names.index(st.session_state.selected_model)
     except ValueError:
@@ -171,11 +250,9 @@ with col_model:
         "Select Model",
         options=valid_model_names,
         index=default_model_index,
-        format_func=lambda name: name.replace("models/", ""),
+        format_func=lambda name: name.replace("models/", "").replace("custom/", "Custom: "),
         label_visibility="collapsed"
     )
-
-model = load_model(st.session_state.selected_model)
 
 with st.expander("Advanced Options: Customize AI Instructions"):
     custom_instructions = st.text_area(
@@ -184,7 +261,6 @@ with st.expander("Advanced Options: Customize AI Instructions"):
         height=150,
         label_visibility="collapsed"
     )
-
 st.divider()
 
 st.subheader("Translate Text")
@@ -194,9 +270,9 @@ with col1a:
     input_text = st.text_area("Enter English text to translate:", height=300, key="text_input")
     if st.button("Translate Text", use_container_width=True, type="primary", disabled=not input_text):
         instructions = custom_instructions.strip() or DEFAULT_PROMPT_INSTRUCTIONS
-        spinner_model_name = st.session_state.selected_model.replace('models/', '')
+        spinner_model_name = st.session_state.selected_model.replace('models/', '').replace("custom/", "Custom: ")
         with st.spinner(f"Translating using {spinner_model_name}..."):
-            translated_output = translate_text(model, input_text, st.session_state.target_language, instructions)
+            translated_output = translate_text(st.session_state.selected_model, input_text, st.session_state.target_language, instructions)
             if translated_output is not None:
                 st.session_state.text_translation_result = translated_output
                 st.session_state.doc_translation_result = ""
@@ -206,11 +282,8 @@ with col1b:
     st.text_area(
         "Text Translation Result",
         value=st.session_state.text_translation_result or "Translation will appear here...",
-        height=300,
-        disabled=True,
-        key="text_output"
+        height=300, disabled=True, key="text_output"
     )
-
 st.divider()
 
 st.subheader("Translate Document")
@@ -240,15 +313,15 @@ with col2a:
                     current_chunk_number = (i // CHUNK_SIZE) + 1
                     progress_text = f"Translating chunk {current_chunk_number} of {total_chunks}..."
                     progress_bar.progress(current_chunk_number / total_chunks, text=progress_text)
-
-                    spinner_model_name = st.session_state.selected_model.replace('models/', '')
+                    spinner_model_name = st.session_state.selected_model.replace('models/', '').replace("custom/", "Custom: ")
+                    
                     with st.spinner(f"Translating chunk {current_chunk_number}/{total_chunks} using {spinner_model_name}..."):
-                        translated_output = translate_text(model, chunk_group, st.session_state.target_language, instructions)
+                        translated_output = translate_text(st.session_state.selected_model, chunk_group, st.session_state.target_language, instructions)
                     if translated_output is not None:
                         translated_chunks.append(translated_output)
                     else:
                         st.error(f"Failed to translate chunk {current_chunk_number}. Skipping.")
-
+                        
                 st.session_state.doc_translation_result = "\n\n".join(translated_chunks)
                 st.session_state.text_translation_result = ""
                 progress_bar.progress(1.0, text="Translation complete!")
@@ -259,21 +332,14 @@ with col2b:
     st.text_area(
         "Document Translation Result",
         value=st.session_state.doc_translation_result or "Document translation will appear here...",
-        height=300,
-        disabled=True,
-        key="doc_output"
+        height=300, disabled=True, key="doc_output"
     )
-    
     if st.session_state.doc_translation_result:
         original_name = os.path.splitext(st.session_state.doc_info.get('name', 'document'))[0]
         file_name = f"translated_{original_name}.txt"
-        
         download_data = st.session_state.doc_translation_result.encode('utf-8')
-
         st.download_button(
             label="Download Translated .txt",
-            data=download_data,
-            file_name=file_name,
-            mime="text/plain",
-            use_container_width=True
+            data=download_data, file_name=file_name,
+            mime="text/plain", use_container_width=True
         )
