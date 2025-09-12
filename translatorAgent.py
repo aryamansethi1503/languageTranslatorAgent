@@ -21,6 +21,12 @@ st.set_page_config(
 st.markdown("""
 <style>
     [data-testid="stExpanderDetails"] { padding: 0rem; }
+    
+    [data-testid="stTextArea"] textarea {
+    font-size: 18px;
+    color:black;
+    background-color: white;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -38,7 +44,8 @@ def init_session_state():
         "doc_translation_result": "",
         "target_language": "Hindi",
         "doc_info": {"name": None, "type": None},
-        "selected_model": "models/gemini-1.5-flash"
+        "selected_model": "models/gemini-1.5-flash",
+        "prompt_instructions": DEFAULT_PROMPT_INSTRUCTIONS
     }
     for key, value in state_defaults.items():
         if key not in st.session_state:
@@ -254,22 +261,23 @@ with col_model:
         label_visibility="collapsed"
     )
 
-with st.expander("Advanced Options: Customize AI Instructions"):
+with st.expander("Advanced Options: Define Your Prompt Here"):
     custom_instructions = st.text_area(
-        "Enter custom instructions:",
+        "Edit the Prompt Instructions Below:",
+        key="prompt_instructions",
         placeholder="e.g., Translate the following text into a formal, business-appropriate tone.",
         height=150,
         label_visibility="collapsed"
     )
 st.divider()
 
-st.subheader("Translate Text")
+st.subheader("Text Translation")
 col1a, col1b = st.columns([1, 1], gap="large")
 
 with col1a:
-    input_text = st.text_area("Enter English text to translate:", height=300, key="text_input")
+    input_text = st.text_area("Enter English Text Here:", height=300, key="text_input")
     if st.button("Translate Text", use_container_width=True, type="primary", disabled=not input_text):
-        instructions = custom_instructions.strip() or DEFAULT_PROMPT_INSTRUCTIONS
+        instructions = st.session_state.prompt_instructions.strip()
         spinner_model_name = st.session_state.selected_model.replace('models/', '').replace("custom/", "Custom: ")
         with st.spinner(f"Translating using {spinner_model_name}..."):
             translated_output = translate_text(st.session_state.selected_model, input_text, st.session_state.target_language, instructions)
@@ -280,20 +288,20 @@ with col1a:
 
 with col1b:
     st.text_area(
-        "Text Translation Result",
+        "Translated Text",
         value=st.session_state.text_translation_result or "Translation will appear here...",
         height=300, disabled=True, key="text_output"
     )
 st.divider()
 
-st.subheader("Translate Document")
+st.subheader("Document Translation")
 col2a, col2b = st.columns([1, 1], gap="large")
 
 with col2a:
-    uploaded_file = st.file_uploader("Upload a document", type=["pdf", "docx", "txt"], key="file_uploader")
+    uploaded_file = st.file_uploader("Upload a Document", type=["pdf", "docx", "txt"], key="file_uploader")
     if st.button("Translate Document", use_container_width=True, type="primary", disabled=uploaded_file is None):
         if uploaded_file is not None:
-            instructions = custom_instructions.strip() or DEFAULT_PROMPT_INSTRUCTIONS
+            instructions = st.session_state.prompt_instructions.strip()
             st.session_state.doc_info['name'] = uploaded_file.name
             file_ext = os.path.splitext(uploaded_file.name)[-1].lower().strip('.')
             st.session_state.doc_info['type'] = file_ext
@@ -330,7 +338,7 @@ with col2a:
 
 with col2b:
     st.text_area(
-        "Document Translation Result",
+        "Translated Document",
         value=st.session_state.doc_translation_result or "Document translation will appear here...",
         height=300, disabled=True, key="doc_output"
     )
