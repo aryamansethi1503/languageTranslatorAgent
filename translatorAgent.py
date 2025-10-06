@@ -23,10 +23,10 @@ st.markdown("""
     [data-testid="stExpanderDetails"] { padding: 0rem; }
     
     [data-testid="stTextArea"] textarea {
-    font-size: 18px;
-    color:black;
-    background-color: white;
-}
+        font-size: 18px;
+        color: black;
+        background-color: white;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -37,6 +37,7 @@ DEFAULT_PROMPT_INSTRUCTIONS = """You are a highly skilled translation expert. Yo
 - Preserve the original formatting (like paragraphs and line breaks) as much as possible."""
 
 def init_session_state():
+    """Initializes session state variables if they don't exist."""
     state_defaults = {
         "gemini_api_configured": False,
         "custom_model_configured": False,
@@ -60,6 +61,7 @@ try:
         st.session_state.gemini_api_configured = True
 except Exception as e:
     st.warning(f"Could not configure Gemini API: {e}")
+
 if "custom_model" in st.secrets:
     try:
         aiplatform.init(
@@ -76,12 +78,12 @@ if not st.session_state.gemini_api_configured and "custom_model" not in st.secre
 
 @st.cache_resource
 def load_gemini_model(model_name):
-    """Loads the specified Gemini model and caches it."""
+    """Loads and caches the specified Gemini model."""
     return genai.GenerativeModel(model_name=model_name)
 
 @st.cache_data
 def translate_with_custom_model(_text, target_language, instructions):
-    """Translates text using the custom Vertex AI model."""
+    """Translates text using a custom Vertex AI model."""
     if not st.session_state.custom_model_configured:
         st.error("Custom model selected, but its configuration in secrets.toml is missing or invalid.")
         return None
@@ -109,10 +111,8 @@ def translate_with_custom_model(_text, target_language, instructions):
             first_prediction = response.predictions[0]
             if 'translation_output' in first_prediction:
                 translated_text = first_prediction['translation_output']
-            elif 'translation_output' in first_prediction:
-                 translated_text = first_prediction['translation_output']
             else:
-                st.error("Response format from custom model not recognized. Could not find 'translation_output' or 'content' key.")
+                st.error("Response format from custom model not recognized. Could not find 'translation_output' key.")
                 st.json(response.predictions)
                 return None
             print("Vertex AI API Call Made")
@@ -128,9 +128,7 @@ def translate_with_custom_model(_text, target_language, instructions):
 
 @st.cache_data
 def translate_text(model_name, text, target_language, instructions):
-    """
-    Checks the model name and calls the appropriate translation service.
-    """
+    """Calls the appropriate translation service based on the model name."""
     if not text or not target_language:
         return ""
 
@@ -182,32 +180,13 @@ def extract_text_from_txt(file):
         st.error(f"Error reading TXT file: {e}")
         return []
 
-def create_pdf_from_text(text):
-    pdf = FPDF()
-    pdf.add_page()
-    try:
-        pdf.add_font("DejaVu", "", "DejaVuSans.ttf", uni=True)
-        pdf.set_font("DejaVu", size=12)
-    except RuntimeError:
-        pdf.set_font("Arial", size=12)
-    pdf.multi_cell(0, 10, text)
-    return bytes(pdf.output(dest='S'))
-
-def create_docx_from_text(text):
-    doc = Document()
-    for paragraph in text.split('\n'):
-        doc.add_paragraph(paragraph)
-    bio = BytesIO()
-    doc.save(bio)
-    return bio.getvalue()
-
 st.title("🗣️ Language Translation Agent")
 st.markdown("**Translate Text or Documents using your chosen AI model.**")
 
-st.markdown("Language and Model Selection")
+st.markdown("### Language and Model Selection")
 col_lang, col_model, col_empty = st.columns([1, 1, 2])
 
-languages = ["Abkhaz", "Acehnese", "Acholi", "Afar", "Afrikaans", "Albanian", "Alur", "Amharic", "Arabic", "Armenian", "Assamese", "Avar", "Awadhi", "Aymara","Azerbaijani", "Balinese", "Baluchi","Bambara", "Baoulé", "Bashkir","Basque","Batak Karo","Batak Simalungun","Batak Toba","Belarusian","Bemba","Bengali","Betawi","Bhojpuri","Bikol","Bosnian","Breton","Bulgarian","Buryat", "Cantonese","Catalan","Cebuano","Chamorro","Chechen","Chichewa","Chinese (Simplified)","Chinese (Traditional)","Chuukese","Chuvash","Corsican","Crimean Tatar (Cyrillic)","Crimean Tatar (Latin)","Croatian","Czech","Danish","Dari","Dhivehi","Dinka","Dogri","Dombe","Dutch","Dyula","Dzongkha","English","Esperanto","Estonian","Ewe","Faroese","Fijian","Filipino","Finnish","Fon","French","French (Canada)","Frisian","Friulian","Fulani", "Ga","Galician","Georgian","German","Greek","Guarani","Gujrati","Haitian Crele","Hakha Chin","Hausa","Hawaiian","Hebrew","Hiligaynon","Hindi","Hmong","Hungarian","Hunsrik","Iban","Icelandic","Igbo","Ilocano","Indonesian","Inuktut (Latin)","Inuktut (Syllabics)","Irish","Italian","Jamaican Patois","Japanese","Javanese","Jingpo","Kalaallisut","Kannada","Kanuri","Kapampangan","Kazakh","Khasi","Khmer","Kiga","Kikongo","Kinyarwanda","Kituba","Kokborok","Komi","Konkani","Korean","Krio","Kurdish (Kurmanji)","Kurdish (Sorani)","Kyrgyz", "Lao","Latgalian","Latin","Latvian","Ligurian","Limburgish","Lingala","Lithuanian","Lombard","Luganda","Luo","Luxembourgish", "Macedonian","Madurese","Maithili","Makassar","Malagasy","Malay","Malay (Jawi)","Malayalam","Maltese","Mam","Manx","Maroi","Marathi","Marshallese","Marwadi","Mauitian Creole","Meadow Mari","Meiteilon (Manipuri)","Minang","Mizo","Mongolian","Myanmar (Burmese)","Nahuatl (Eastern Huasteca)","Ndau","Ndebele (South)","Nepalbhasa (Newari)","Nepali","NKo","Norwegian","Nuer","Occitan","Odia (Oriya)","Oromo","Ossetian","Pangasinan","Papiamento","Pashto","Persian","Polish","Portuguese (Brazil)","Portuguese (Portugal)","Punjabi (Gurmukhi)","Punjabi (Shahmukhi)","Quechua","QÊ¼eqchiÊ¼","Romani","Romanian","Rundi","Russian","Sami (North)","Samoan","Sango","Sanskrit","Santali (Latin)","Santali (Ol Chiki)","Scots Gaelic","Sepedi","Serbian","Sesotho","Seychellois Creole","Shan","Shona","Sicilian","Silesian","Sindhi","Sinhala","Slovak","Slovenian","Somali","Spanish","Sundanese", "Susu","Swahili","Swati","Swedish","Tahitian","Tazik","Tamazight","Tamazight (Tifinagh)","Tamil","Tatr","Telugu","Tetum","Thai","Tibetan","Tigrinya","Tiv","Tok Pisin","Tongan","Tshiluba","Tsonga","Tswana","Tulu","Tumbuka","Turkish","Turkmen","Tuvan","Twi","Udmurt","Ukrainian","Urdu","Uyghur","Uzbek","Venda","Venetian","Vietnamese","Waray","Welsh","Wolof","Xhosa","Yakut","Yiddish","Yoruba","Yucatec Maya","Zapotec","Zulu"]
+languages = ["Abkhaz", "Acehnese", "Acholi", "Afar", "Afrikaans", "Albanian", "Alur", "Amharic", "Arabic", "Armenian", "Assamese", "Avar", "Awadhi", "Aymara","Azerbaijani", "Balinese", "Baluchi","Bambara", "Baoulé", "Bashkir","Basque","Batak Karo","Batak Simalungun","Batak Toba","Belarusian","Bemba","Bengali","Betawi","Bhojpuri","Bikol","Bosnian","Breton","Bulgarian","Buryat", "Cantonese","Catalan","Cebuano","Chamorro","Chechen","Chichewa","Chinese (Simplified)","Chinese (Traditional)","Chuukese","Chuvash","Corsican","Crimean Tatar (Cyrillic)","Crimean Tatar (Latin)","Croatian","Czech","Danish","Dari","Dhivehi","Dinka","Dogri","Dombe","Dutch","Dyula","Dzongkha","English","Esperanto","Estonian","Ewe","Faroese","Fijian","Filipino","Finnish","Fon","French","French (Canada)","Frisian","Friulian","Fulani", "Ga","Galician","Georgian","German","Greek","Guarani","Gujrati","Haitian Crele","Hakha Chin","Hausa","Hawaiian","Hebrew","Hiligaynon","Hindi","Hmong","Hungarian","Hunsrik","Iban","Icelandic","Igbo","Ilocano","Indonesian","Inuktut (Latin)","Inuktut (Syllabics)","Irish","Italian","Jamaican Patois","Japanese","Javanese","Jingpo","Kalaallisut","Kannada","Kanuri","Kapampangan","Kazakh","Khasi","Khmer","Kiga","Kikongo","Kinyarwanda","Kituba","Kokborok","Komi","Konkani","Korean","Krio","Kurdish (Kurmanji)","Kurdish (Sorani)","Kyrgyz", "Lao","Latgalian","Latin","Latvian","Ligurian","Limburgish","Lingala","Lithuanian","Lombard","Luganda","Luo","Luxembourgish", "Macedonian","Madurese","Maithili","Makassar","Malagasy","Malay","Malay (Jawi)","Malayalam","Maltese","Mam","Manx","Maroi","Marathi","Marshallese","Marwadi","Mauitian Creole","Meadow Mari","Meiteilon (Manipuri)","Minang","Mizo","Mongolian","Myanmar (Burmese)","Nahuatl (Eastern Huasteca)","Ndau","Ndebele (South)","Nepalbhasa (Newari)","Nepali","NKo","Norwegian","Nuer","Occitan","Odia (Oriya)","Oromo","Ossetian","Pangasinan","Papiamento","Pashto","Persian","Polish","Portuguese (Brazil)","Portuguese (Portugal)","Punjabi (Gurmukhi)","Punjabi (Shahmukhi)","Quechua","Qʼeqchiʼ","Romani","Romanian","Rundi","Russian","Sami (North)","Samoan","Sango","Sanskrit","Santali (Latin)","Santali (Ol Chiki)","Scots Gaelic","Sepedi","Serbian","Sesotho","Seychellois Creole","Shan","Shona","Sicilian","Silesian","Sindhi","Sinhala","Slovak","Slovenian","Somali","Spanish","Sundanese", "Susu","Swahili","Swati","Swedish","Tahitian","Tazik","Tamazight","Tamazight (Tifinagh)","Tamil","Tatr","Telugu","Tetum","Thai","Tibetan","Tigrinya","Tiv","Tok Pisin","Tongan","Tshiluba","Tsonga","Tswana","Tulu","Tumbuka","Turkish","Turkmen","Tuvan","Twi","Udmurt","Ukrainian","Urdu","Uyghur","Uzbek","Venda","Venetian","Vietnamese","Waray","Welsh","Wolof","Xhosa","Yakut","Yiddish","Yoruba","Yucatec Maya","Zapotec","Zulu"]
 languages.sort()
 
 try:
@@ -253,7 +232,7 @@ with col_model:
     )
 
 with st.expander("Advanced Options: Define Your Prompt Here"):
-    custom_instructions = st.text_area(
+    st.text_area(
         "Edit the Prompt Instructions Below:",
         key="prompt_instructions",
         placeholder="e.g., Translate the following text into a formal, business-appropriate tone.",
@@ -276,6 +255,7 @@ with col1a:
                 st.session_state.text_translation_result = translated_output
                 st.session_state.doc_translation_result = ""
                 st.session_state.doc_info = {"name": None, "type": None}
+                st.rerun() 
 
 with col1b:
     st.text_area(
@@ -312,10 +292,8 @@ with col2a:
                     current_chunk_number = (i // CHUNK_SIZE) + 1
                     progress_text = f"Translating chunk {current_chunk_number} of {total_chunks}..."
                     progress_bar.progress(current_chunk_number / total_chunks, text=progress_text)
-                    spinner_model_name = st.session_state.selected_model.replace('models/', '').replace("custom/", "Custom: ")
                     
-                    with st.spinner(f"Translating chunk {current_chunk_number}/{total_chunks} using {spinner_model_name}..."):
-                        translated_output = translate_text(st.session_state.selected_model, chunk_group, st.session_state.target_language, instructions)
+                    translated_output = translate_text(st.session_state.selected_model, chunk_group, st.session_state.target_language, instructions)
                     if translated_output is not None:
                         translated_chunks.append(translated_output)
                     else:
@@ -324,6 +302,7 @@ with col2a:
                 st.session_state.doc_translation_result = "\n\n".join(translated_chunks)
                 st.session_state.text_translation_result = ""
                 progress_bar.progress(1.0, text="Translation complete!")
+                st.rerun() 
             else:
                 st.warning("Could not extract text from the document. The file might be empty or corrupted.")
 
